@@ -1,0 +1,691 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Victoria 3 Save Analyser</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@latest/tabler-icons.min.css">
+<script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: 'Georgia', serif; background: #1a1612; color: #e8e0d0; min-height: 100vh; display: flex; align-items: center; justify-content: center; }
+
+  .upload-page { text-align: center; padding: 3rem 2rem; max-width: 560px; width: 100%; }
+  .upload-page h1 { font-size: 2.2rem; font-weight: 400; color: #e8d9b0; letter-spacing: 0.02em; margin-bottom: 0.4rem; }
+  .upload-page .subtitle { font-size: 0.95rem; color: #8a7a60; margin-bottom: 3rem; font-style: italic; }
+
+  .drop-zone {
+    border: 1.5px dashed #5a4e38;
+    border-radius: 12px;
+    padding: 3rem 2rem;
+    cursor: pointer;
+    transition: all 0.2s;
+    background: #221e18;
+    position: relative;
+  }
+  .drop-zone:hover, .drop-zone.drag-over { border-color: #c8a84b; background: #2a251d; }
+  .drop-zone input[type=file] { position: absolute; inset: 0; opacity: 0; cursor: pointer; width: 100%; height: 100%; }
+  .drop-zone .icon { font-size: 2.5rem; color: #5a4e38; margin-bottom: 1rem; display: block; }
+  .drop-zone:hover .icon, .drop-zone.drag-over .icon { color: #c8a84b; }
+  .drop-zone p { color: #8a7a60; font-size: 0.9rem; line-height: 1.6; }
+  .drop-zone p strong { color: #c8a84b; font-style: normal; }
+
+  .progress-area { margin-top: 2rem; display: none; }
+  .progress-area.visible { display: block; }
+  .progress-bar-bg { height: 4px; background: #2a251d; border-radius: 2px; overflow: hidden; margin-bottom: 0.75rem; }
+  .progress-bar-fill { height: 100%; background: #c8a84b; border-radius: 2px; width: 0%; transition: width 0.3s; }
+  .progress-label { font-size: 0.85rem; color: #8a7a60; font-style: italic; }
+
+  .error-msg { margin-top: 1.5rem; padding: 0.75rem 1rem; background: #2a1a1a; border: 1px solid #6b2e2e; border-radius: 8px; color: #e87070; font-size: 0.85rem; display: none; }
+  .error-msg.visible { display: block; }
+
+  .footer-note { margin-top: 3rem; font-size: 0.78rem; color: #4a4030; line-height: 1.6; }
+  .footer-note i { vertical-align: -2px; }
+</style>
+</head>
+<body>
+
+<div class="upload-page" id="uploadPage">
+  <h1>Victoria 3 Save Analyser</h1>
+  <p class="subtitle">Parse and explore your multiplayer save files</p>
+
+  <div class="drop-zone" id="dropZone">
+    <input type="file" id="fileInput" accept=".v3,.zip" />
+    <i class="ti ti-file-upload icon" aria-hidden="true"></i>
+    <p><strong>Click to select</strong> or drag and drop your <code>.v3</code> file here.<br>The file is extracted and parsed entirely in your browser.</p>
+  </div>
+
+  <div class="progress-area" id="progressArea">
+    <div class="progress-bar-bg"><div class="progress-bar-fill" id="progressFill"></div></div>
+    <div class="progress-label" id="progressLabel">Reading file…</div>
+  </div>
+
+  <div class="error-msg" id="errorMsg"></div>
+
+  <p class="footer-note">
+    <i class="ti ti-lock" aria-hidden="true"></i>
+    Your save file is processed entirely in your browser and never uploaded anywhere.
+  </p>
+</div>
+
+<script>
+// ── Utilities ────────────────────────────────────────────────────────────────
+
+function setProgress(pct, label) {
+  document.getElementById('progressFill').style.width = pct + '%';
+  document.getElementById('progressLabel').textContent = label;
+}
+
+function showError(msg) {
+  const el = document.getElementById('errorMsg');
+  el.textContent = msg;
+  el.classList.add('visible');
+  document.getElementById('progressArea').classList.remove('visible');
+}
+
+function isNumeric(str) {
+  return /^\d+$/.test(str.trim());
+}
+
+// ── Parser ───────────────────────────────────────────────────────────────────
+
+function parseSave(text) {
+  const lines = text.split('\n');
+  const total = lines.length;
+  let pos = 0;
+
+  function readline() {
+    if (pos >= lines.length) return null;
+    return lines[pos++].trim();
+  }
+
+  function seek() { pos = 0; }
+
+  function updateDepth(line, depth) {
+    for (const c of line) {
+      if (c === '{') depth++;
+      else if (c === '}') depth--;
+    }
+    return depth;
+  }
+
+  // ── Countries ──────────────────────────────────────────────────────────────
+  function parseCountries() {
+    let depth = 0, inside = false;
+    const dict = {};
+    while (true) {
+      const line = readline();
+      if (line === null) break;
+      const prevDepth = depth;
+      if (line.includes('{') || line.includes('}')) depth = updateDepth(line, depth);
+      if (line === 'country_manager={' && prevDepth === 0) inside = true;
+      if (inside && depth === 1 && prevDepth === 2) break;
+      if (inside && prevDepth === 2 && isNumeric(line.split('=')[0])) {
+        const parts = line.split('=');
+        if (parts[1] && parts[1].trim() !== 'none') {
+          const countryId = parts[0].trim();
+          while (true) {
+            const l2 = readline();
+            if (l2 === null) break;
+            const pd2 = depth;
+            if (l2.includes('{') || l2.includes('}')) depth = updateDepth(l2, depth);
+            if (pd2 === 3 && depth === 2) break;
+            if (l2.split('=')[0].trim() === 'definition') {
+              const name = l2.split('=')[1].trim().replace(/"/g, '');
+              dict[countryId] = { id: countryId, def: name, states: [], player: null };
+              break;
+            }
+          }
+        }
+      }
+    }
+    return dict;
+  }
+
+  // ── States ─────────────────────────────────────────────────────────────────
+  function parseStates(countries) {
+    let depth = 0, inside = false;
+    const dict = {};
+    while (true) {
+      const line = readline();
+      if (line === null) break;
+      const prevDepth = depth;
+      if (line.includes('{') || line.includes('}')) depth = updateDepth(line, depth);
+      if (line === 'states={' && prevDepth === 0) inside = true;
+      if (inside && depth === 1 && prevDepth === 2) break;
+      if (inside && prevDepth === 2 && isNumeric(line.split('=')[0])) {
+        const parts = line.split('=');
+        if (parts[1] && parts[1].trim() !== 'none') {
+          const stateId = parts[0].trim();
+          let region = null, arable = null, country = null;
+          while (true) {
+            const l2 = readline();
+            if (l2 === null) break;
+            const pd2 = depth;
+            if (l2.includes('{') || l2.includes('}')) depth = updateDepth(l2, depth);
+            if (pd2 === 3 && depth === 2) {
+              if (country && countries[country] && region && arable) {
+                const s = { id: stateId, region, arable: parseFloat(arable), buildings: [], pops: [] };
+                countries[country].states.push(s);
+                dict[stateId] = s;
+              }
+              break;
+            }
+            const k = l2.split('=')[0].trim();
+            const v = l2.split('=')[1] ? l2.split('=')[1].trim() : null;
+            if (k === 'region' && v) region = v.replace(/"/g, '');
+            else if (k === 'arable_land' && v) arable = v;
+            else if (k === 'country' && v) country = v;
+          }
+        }
+      }
+    }
+    return dict;
+  }
+
+  // ── Buildings ──────────────────────────────────────────────────────────────
+  function parseBuildings(states) {
+    let depth = 0, inside = false;
+    const dict = {};
+    while (true) {
+      const line = readline();
+      if (line === null) break;
+      const prevDepth = depth;
+      if (line.includes('{') || line.includes('}')) depth = updateDepth(line, depth);
+      if (line === 'building_manager={' && prevDepth === 0) inside = true;
+      if (inside && depth === 1 && prevDepth === 2) break;
+      if (inside && prevDepth === 2 && isNumeric(line.split('=')[0])) {
+        const parts = line.split('=');
+        if (parts[1] && parts[1].trim() !== 'none') {
+          const buildingId = parts[0].trim();
+          let bState = null, bType = null, bLevel = null;
+          while (true) {
+            const l2 = readline();
+            if (l2 === null) break;
+            const pd2 = depth;
+            if (l2.includes('{') || l2.includes('}')) depth = updateDepth(l2, depth);
+            if (pd2 === 3 && depth === 2) {
+              if (bState && states[bState] && bType && bLevel) {
+                const b = { id: buildingId, type: bType.trim(), levels: parseInt(bLevel), pops: [] };
+                dict[buildingId] = b;
+                states[bState].buildings.push(b);
+              }
+              break;
+            }
+            const k = l2.split('=')[0].trim();
+            const v = l2.split('=')[1] ? l2.split('=')[1].trim() : null;
+            if (k === 'building' && v) bType = v;
+            else if (k === 'levels' && v) bLevel = v;
+            else if (k === 'state' && v) bState = v;
+          }
+        }
+      }
+    }
+    return dict;
+  }
+
+  // ── Players ────────────────────────────────────────────────────────────────
+  function parsePlayers(countries) {
+    let depth = 0, inside = false;
+    const dict = {};
+    while (true) {
+      const line = readline();
+      if (line === null) break;
+      const prevDepth = depth;
+      if (line.includes('{') || line.includes('}')) depth = updateDepth(line, depth);
+      if (line === 'player_manager={' && prevDepth === 0) inside = true;
+      if (inside && depth === 1 && prevDepth === 2) break;
+      if (inside && prevDepth === 2 && isNumeric(line.split('=')[0])) {
+        const parts = line.split('=');
+        if (parts[1] && parts[1].trim() !== 'none') {
+          const playerId = parts[0].trim();
+          let pCountry = null, pName = null;
+          while (true) {
+            const l2 = readline();
+            if (l2 === null) break;
+            const pd2 = depth;
+            if (l2.includes('{') || l2.includes('}')) depth = updateDepth(l2, depth);
+            if (pd2 === 3 && depth === 2) {
+              if (pCountry && countries[pCountry] && pName) {
+                const p = { id: playerId, country: pCountry, name: pName };
+                countries[pCountry].player = pName;
+                dict[playerId] = p;
+              }
+              break;
+            }
+            const k = l2.split('=')[0].trim();
+            const v = l2.split('=')[1] ? l2.split('=')[1].trim() : null;
+            if (k === 'user' && v) pName = v.replace(/"/g, '');
+            else if (k === 'country' && v) pCountry = v;
+          }
+        }
+      }
+    }
+    return dict;
+  }
+
+  // ── Pops ───────────────────────────────────────────────────────────────────
+  function parsePops(buildings, states) {
+    let depth = 0, inside = false;
+    const dict = {};
+    while (true) {
+      const line = readline();
+      if (line === null) break;
+      const prevDepth = depth;
+      if (line.includes('{') || line.includes('}')) depth = updateDepth(line, depth);
+      if (line === 'pops={' && prevDepth === 0) inside = true;
+      if (inside && depth === 1 && prevDepth === 2) break;
+      if (inside && prevDepth === 2 && isNumeric(line.split('=')[0])) {
+        const parts = line.split('=');
+        if (parts[1] && parts[1].trim() !== 'none') {
+          const popId = parts[0].trim();
+          let pState = null, pType = null, pWorkforce = 0, pDependents = 0, pWorkplace = 'unemployed';
+          while (true) {
+            const l2 = readline();
+            if (l2 === null) break;
+            const pd2 = depth;
+            if (l2.includes('{') || l2.includes('}')) depth = updateDepth(l2, depth);
+            if (pd2 === 3 && depth === 2) {
+              const size = pWorkforce + pDependents;
+              if (pType && size > 0) {
+                const pop = { id: popId, type: pType, size, workforce: pWorkforce, dependents: pDependents, workplace: pWorkplace };
+                if (pWorkplace !== 'unemployed' && buildings[pWorkplace]) {
+                  buildings[pWorkplace].pops.push(pop);
+                } else if (pState && states[pState]) {
+                  states[pState].pops.push(pop);
+                }
+                dict[popId] = pop;
+              }
+              break;
+            }
+            const k = l2.split('=')[0].trim();
+            const v = l2.split('=')[1] ? l2.split('=')[1].trim() : null;
+            if (k === 'type' && v) pType = v.replace(/"/g, '');
+            else if (k === 'location' && v) pState = v;
+            else if (k === 'workplace' && v) pWorkplace = v;
+            else if (k === 'workforce' && v) pWorkforce = parseInt(v) || 0;
+            else if (k === 'dependents' && v) pDependents = parseInt(v) || 0;
+          }
+        }
+      }
+    }
+    return dict;
+  }
+
+  // ── Run all parsers ────────────────────────────────────────────────────────
+  setProgress(15, 'Parsing countries…');
+  seek(); const countries = parseCountries();
+
+  setProgress(30, 'Parsing states…');
+  seek(); const states = parseStates(countries);
+
+  setProgress(50, 'Parsing buildings…');
+  seek(); const buildings = parseBuildings(states);
+
+  setProgress(65, 'Parsing players…');
+  seek(); const players = parsePlayers(countries);
+
+  setProgress(80, 'Parsing pops…');
+  seek(); parsePops(buildings, states);
+
+  setProgress(95, 'Generating viewer…');
+  return Object.values(countries);
+}
+
+// ── Viewer HTML ───────────────────────────────────────────────────────────────
+
+function buildViewerHTML(rawData) {
+  const raw_json = JSON.stringify(rawData);
+
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Victoria 3 — Save Viewer</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@latest/tabler-icons.min.css">
+<script src="https://cdn.jsdelivr.net/npm/chart.js"><\/script>
+<style>
+  body { font-family: system-ui, sans-serif; background: #f5f4f0; color: #1a1a1a; margin: 0; padding: 2rem; max-width: 1200px; margin: auto; }
+  h1 { font-size: 24px; font-weight: 600; margin-bottom: 0.5rem; }
+  h2 { font-size: 15px; font-weight: 500; color: #555; margin: 1.5rem 0 0.75rem; }
+  .tabs { display: flex; gap: 1rem; border-bottom: 1px solid #ddd; margin-bottom: 1.5rem; padding-bottom: 0.5rem; }
+  .tab-btn { background: none; border: none; font-size: 16px; font-weight: 500; color: #888; cursor: pointer; padding: 0.5rem 1rem; border-radius: 6px; transition: 0.2s; }
+  .tab-btn:hover { background: #eae9e5; }
+  .tab-btn.active { color: #1D9E75; background: #e3efea; }
+  .section { display: none; }
+  .section.active { display: block; }
+  input[type=text] { width: 100%; box-sizing: border-box; padding: 10px 14px; font-size: 14px; border: 1px solid #ccc; border-radius: 8px; margin-bottom: 1rem; background: #fff; }
+  .country-card { background: #fff; border: 1px solid #ddd; border-radius: 12px; margin-bottom: 10px; overflow: hidden; }
+  .country-card.player-card { border-color: #1D9E75; border-width: 2px; }
+  .country-header { display: flex; align-items: center; justify-content: space-between; padding: 12px 16px; cursor: pointer; user-select: none; }
+  .country-header:hover { background: #fdfcfb; }
+  .country-name { font-size: 16px; font-weight: 600; }
+  .country-meta { font-size: 13px; color: #888; margin-top: 4px; }
+  .player-name { font-size: 13px; color: #1D9E75; font-weight: 600; margin-top: 2px; display: inline-flex; align-items: center; gap: 4px; }
+  .chevron { font-size: 16px; color: #888; transition: transform 0.2s; }
+  .chevron.open { transform: rotate(180deg); }
+  .states-list { border-top: 1px solid #eee; display: none; }
+  .states-list.open { display: block; }
+  .state-block { border-bottom: 1px solid #f0f0f0; }
+  .state-block:last-child { border-bottom: none; }
+  .state-row { display: flex; align-items: center; justify-content: space-between; padding: 8px 16px 8px 24px; cursor: pointer; background: #fafaf8; }
+  .state-row:hover { background: #f2f2f0; }
+  .state-name { font-size: 14px; font-weight: 500; }
+  .state-id { font-size: 12px; color: #aaa; margin-top: 2px; }
+  .arable-wrap { display: flex; align-items: center; gap: 8px; }
+  .bar-bg { width: 80px; height: 6px; background: #ddd; border-radius: 3px; overflow: hidden; }
+  .bar-fill { height: 100%; background: #1D9E75; border-radius: 3px; }
+  .arable-val { font-size: 12px; color: #666; min-width: 28px; text-align: right; }
+  .badge { font-size: 12px; padding: 2px 8px; border-radius: 6px; background: #f0f0f0; color: #666; font-weight: 500; }
+  .buildings-list { display: none; background: #fff; }
+  .buildings-list.open { display: block; }
+  .building-block { border-bottom: 1px solid #f0f0f0; }
+  .building-row { display: flex; justify-content: space-between; align-items: center; padding: 8px 16px 8px 36px; font-size: 13px; color: #555; cursor: pointer; }
+  .building-row:hover { background: #f9f9f7; }
+  .building-name { color: #333; font-weight: 500; }
+  .pops-list { display: none; padding: 6px 16px 8px 46px; background: #fafaf8; border-top: 1px solid #f0f0f0; }
+  .pops-list.open { display: block; }
+  .unemployed-block { border-top: 1px dashed #ddd; background: #fff8f0; }
+  .unemployed-row { display: flex; justify-content: space-between; align-items: center; padding: 8px 16px 8px 36px; font-size: 13px; cursor: pointer; color: #a05a00; font-weight: 500; }
+  .unemployed-row:hover { background: #fdf0e0; }
+  .unemployed-pops-list { display: none; padding: 6px 16px 8px 46px; background: #fff8f0; border-top: 1px solid #f0e0c8; }
+  .unemployed-pops-list.open { display: block; }
+  .pop-block { border-bottom: 1px dashed #e5e5e3; padding: 4px 0; }
+  .pop-block:last-child { border-bottom: none; }
+  .pop-row { display: flex; justify-content: space-between; align-items: center; padding: 4px 6px; font-size: 12px; color: #444; cursor: pointer; border-radius: 4px; }
+  .pop-row:hover { background: #eee; }
+  .pop-details { display: none; padding: 8px 12px; font-size: 11px; color: #555; background: #eee; border-radius: 6px; margin-top: 4px; }
+  .pop-details.open { display: flex; justify-content: space-between; }
+  .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1rem; margin-bottom: 2rem; }
+  .stat-card { background: #fff; padding: 1.5rem; border-radius: 12px; border: 1px solid #ddd; }
+  .stat-title { font-size: 13px; color: #666; text-transform: uppercase; letter-spacing: 0.5px; font-weight: 600; margin-bottom: 0.5rem; }
+  .stat-value { font-size: 28px; font-weight: bold; color: #1a1a1a; }
+  .charts-layout { display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem; }
+  .chart-card { background: #fff; padding: 1.5rem; border-radius: 12px; border: 1px solid #ddd; }
+  .chart-full { grid-column: 1 / -1; }
+  @media (max-width: 900px) { .charts-layout { grid-template-columns: 1fr; } }
+  .empty { text-align: center; padding: 3rem; color: #aaa; font-size: 16px; }
+</style>
+</head>
+<body>
+<h1>Victoria 3 Save Viewer</h1>
+<div class="tabs">
+  <button class="tab-btn active" onclick="switchTab('viewer', this)">Data Viewer</button>
+  <button class="tab-btn" onclick="switchTab('stats', this)">Global Stats</button>
+</div>
+<div id="viewer" class="section active">
+  <input type="text" placeholder="Search countries, players, or regions…" id="search" oninput="renderList()" />
+  <div id="list"></div>
+</div>
+<div id="stats" class="section">
+  <div class="stats-grid">
+    <div class="stat-card"><div class="stat-title">Total Global Population</div><div class="stat-value" id="totPop">0</div></div>
+    <div class="stat-card"><div class="stat-title">Total Workforce</div><div class="stat-value" id="totWork">0</div></div>
+    <div class="stat-card"><div class="stat-title">Total Dependents</div><div class="stat-value" id="totDep">0</div></div>
+    <div class="stat-card"><div class="stat-title">Total Arable Land</div><div class="stat-value" id="totArable">0</div></div>
+  </div>
+  <div class="charts-layout">
+    <div class="chart-card"><canvas id="popTypeChart"></canvas></div>
+    <div class="chart-card"><canvas id="topCountriesPopChart"></canvas></div>
+    <div class="chart-card chart-full"><canvas id="topCountriesArableChart"></canvas></div>
+    <div class="chart-card chart-full"><canvas id="topStatesPopChart"></canvas></div>
+  </div>
+</div>
+<script>
+const RAW = ${raw_json};
+const maxArable = Math.max(...RAW.flatMap(c => c.states.map(s => s.arable)), 1);
+
+function fmt(str) {
+  if (!str) return 'Unknown';
+  return str.replace(/^(STATE_|building_|pop_)/, '').replace(/_/g, ' ').toLowerCase().replace(/\\b\\w/g, c => c.toUpperCase());
+}
+
+function switchTab(tabId, btn) {
+  document.querySelectorAll('.section').forEach(el => el.classList.remove('active'));
+  document.querySelectorAll('.tab-btn').forEach(el => el.classList.remove('active'));
+  document.getElementById(tabId).classList.add('active');
+  btn.classList.add('active');
+  if (tabId === 'stats' && !window.chartsRendered) { renderStats(); window.chartsRendered = true; }
+}
+
+function popRows(pops) {
+  if (!pops.length) return '<div style="font-size:12px;color:#aaa;padding:4px 0">No pops</div>';
+  return pops.map(p => \`
+    <div class="pop-block">
+      <div class="pop-row" onclick="togglePopDetails(this)">
+        <span style="font-weight:500">\${fmt(p.type)}</span>
+        <div style="display:flex;align-items:center;gap:8px">
+          <span>\${p.size.toLocaleString()}</span>
+          <i class="ti ti-chevron-down chevron" style="font-size:12px" aria-hidden="true"></i>
+        </div>
+      </div>
+      <div class="pop-details">
+        <div><strong>Workforce:</strong> \${p.workforce.toLocaleString()}</div>
+        <div><strong>Dependents:</strong> \${p.dependents.toLocaleString()}</div>
+      </div>
+    </div>\`).join('');
+}
+
+function makeCard(c, isOpen) {
+  const totalArable = c.states.reduce((a, s) => a + s.arable, 0);
+  const totalPop = c.states.reduce((acc, s) =>
+    acc + s.buildings.reduce((bAcc, b) => bAcc + b.pops.reduce((pAcc, p) => pAcc + p.size, 0), 0)
+    + s.pops.reduce((pAcc, p) => pAcc + p.size, 0), 0);
+
+  return \`<div class="country-card\${c.player ? ' player-card' : ''}">
+    <div class="country-header" onclick="toggle(this)">
+      <div>
+        <div class="country-name">\${c.def}</div>
+        \${c.player ? \`<div class="player-name"><i class="ti ti-user" style="font-size:14px" aria-hidden="true"></i> \${c.player}</div>\` : ''}
+        <div class="country-meta">\${c.states.length} state\${c.states.length !== 1 ? 's' : ''} · Pop: \${totalPop.toLocaleString()} · Arable: \${totalArable}</div>
+      </div>
+      <div style="display:flex;align-items:center;gap:12px">
+        <span class="badge">ID \${c.id}</span>
+        <i class="ti ti-chevron-down chevron\${isOpen ? ' open' : ''}" aria-hidden="true"></i>
+      </div>
+    </div>
+    <div class="states-list\${isOpen ? ' open' : ''}">
+      \${c.states.map(s => \`
+      <div class="state-block">
+        <div class="state-row" onclick="toggleBuildings(this)">
+          <div>
+            <div class="state-name">\${fmt(s.region)}</div>
+            <div class="state-id">ID \${s.id} · \${s.buildings.length} building\${s.buildings.length !== 1 ? 's' : ''}\${s.pops.length > 0 ? ' · ' + s.pops.length + ' unemployed group' + (s.pops.length !== 1 ? 's' : '') : ''}</div>
+          </div>
+          <div class="arable-wrap">
+            <div class="bar-bg"><div class="bar-fill" style="width:\${Math.round(s.arable / maxArable * 100)}%"></div></div>
+            <div class="arable-val">\${s.arable}</div>
+            <i class="ti ti-chevron-down chevron" style="font-size:14px;margin-left:4px" aria-hidden="true"></i>
+          </div>
+        </div>
+        <div class="buildings-list">
+          \${s.buildings.length === 0 && s.pops.length === 0
+            ? '<div style="font-size:13px;color:#aaa;padding:8px 16px 8px 36px">No buildings</div>'
+            : s.buildings.map(b => \`
+          <div class="building-block">
+            <div class="building-row" onclick="togglePops(this)">
+              <div>
+                <span class="building-name">\${fmt(b.type)}</span>
+                <span class="badge" style="margin-left:8px">lvl \${b.levels}</span>
+              </div>
+              <div style="display:flex;align-items:center;gap:8px">
+                <span style="font-size:12px;color:#888">\${b.pops.length} pop group\${b.pops.length !== 1 ? 's' : ''}</span>
+                <i class="ti ti-chevron-down chevron" style="font-size:14px" aria-hidden="true"></i>
+              </div>
+            </div>
+            <div class="pops-list">\${popRows(b.pops)}</div>
+          </div>\`).join('') +
+          (s.pops.length > 0 ? \`
+          <div class="unemployed-block">
+            <div class="unemployed-row" onclick="togglePops(this)">
+              <span><i class="ti ti-user-off" style="font-size:13px;margin-right:4px" aria-hidden="true"></i>Unemployed</span>
+              <div style="display:flex;align-items:center;gap:8px">
+                <span style="font-size:12px">\${s.pops.length} group\${s.pops.length !== 1 ? 's' : ''}</span>
+                <i class="ti ti-chevron-down chevron" style="font-size:14px" aria-hidden="true"></i>
+              </div>
+            </div>
+            <div class="unemployed-pops-list">\${popRows(s.pops)}</div>
+          </div>\` : '')}
+        </div>
+      </div>\`).join('')}
+    </div>
+  </div>\`;
+}
+
+function renderList() {
+  const q = document.getElementById('search').value.toLowerCase();
+  const list = document.getElementById('list');
+  const filtered = RAW.map(c => ({
+    ...c, states: c.states.filter(s => !q || fmt(s.region).toLowerCase().includes(q))
+  })).filter(c => !q || c.def.toLowerCase().includes(q) || (c.player && c.player.toLowerCase().includes(q)) || c.states.length > 0);
+  const playerCountries = filtered.filter(c => c.player);
+  const aiCountries = filtered.filter(c => !c.player);
+  const isOpen = !!q;
+  let html = '';
+  if (playerCountries.length) { html += '<h2>Player Controlled</h2>'; html += playerCountries.map(c => makeCard(c, isOpen)).join(''); }
+  if (aiCountries.length) { html += '<h2>AI Controlled</h2>'; html += aiCountries.map(c => makeCard(c, isOpen)).join(''); }
+  if (!playerCountries.length && !aiCountries.length) html = '<div class="empty">No matches found.</div>';
+  list.innerHTML = html;
+}
+
+function toggle(h) { h.nextElementSibling.classList.toggle('open'); h.querySelector('.chevron').classList.toggle('open'); }
+function toggleBuildings(r) { r.nextElementSibling.classList.toggle('open'); r.querySelector('.chevron').classList.toggle('open'); }
+function togglePops(r) { r.nextElementSibling.classList.toggle('open'); r.querySelector('.chevron').classList.toggle('open'); }
+function togglePopDetails(r) { r.nextElementSibling.classList.toggle('open'); r.querySelector('.chevron').classList.toggle('open'); }
+
+renderList();
+
+function renderStats() {
+  let totalPop = 0, totalWorkforce = 0, totalDependents = 0, totalArable = 0;
+  const popTypes = {};
+  const countries = [], allStates = [];
+
+  RAW.forEach(c => {
+    let cPop = 0, cArable = 0;
+    c.states.forEach(s => {
+      let sPop = 0;
+      cArable += s.arable; totalArable += s.arable;
+      [...s.pops, ...s.buildings.flatMap(b => b.pops)].forEach(p => {
+        cPop += p.size; sPop += p.size; totalPop += p.size;
+        totalWorkforce += p.workforce; totalDependents += p.dependents;
+        const n = fmt(p.type);
+        popTypes[n] = (popTypes[n] || 0) + p.size;
+      });
+      allStates.push({ name: fmt(s.region) + ' (' + c.def + ')', pop: sPop });
+    });
+    countries.push({ name: c.def, pop: cPop, arable: cArable, isPlayer: !!c.player });
+  });
+
+  document.getElementById('totPop').innerText = totalPop.toLocaleString();
+  document.getElementById('totWork').innerText = totalWorkforce.toLocaleString();
+  document.getElementById('totDep').innerText = totalDependents.toLocaleString();
+  document.getElementById('totArable').innerText = totalArable.toLocaleString();
+
+  countries.sort((a, b) => b.pop - a.pop);
+  const top10Pop = countries.slice(0, 10);
+  countries.sort((a, b) => b.arable - a.arable);
+  const top10Arable = countries.slice(0, 10);
+  allStates.sort((a, b) => b.pop - a.pop);
+  const top10States = allStates.slice(0, 10);
+  const ptLabels = Object.keys(popTypes).sort((a, b) => popTypes[b] - popTypes[a]);
+  const ptData = ptLabels.map(l => popTypes[l]);
+  const colors = ['#1D9E75','#E67E22','#3498DB','#9B59B6','#F1C40F','#E74C3C','#34495E','#16A085','#27AE60','#2980B9'];
+
+  Chart.defaults.font.family = 'system-ui, sans-serif';
+  Chart.defaults.color = '#666';
+
+  new Chart(document.getElementById('popTypeChart'), {
+    type: 'doughnut',
+    data: { labels: ptLabels, datasets: [{ data: ptData, backgroundColor: colors }] },
+    options: { plugins: { title: { display: true, text: 'Global Population by Profession', font: { size: 16, weight: '600' } }, legend: { position: 'bottom' } } }
+  });
+  new Chart(document.getElementById('topCountriesPopChart'), {
+    type: 'bar',
+    data: { labels: top10Pop.map(c => c.name), datasets: [{ label: 'Population', data: top10Pop.map(c => c.pop), backgroundColor: top10Pop.map(c => c.isPlayer ? '#1D9E75' : '#3498DB') }] },
+    options: { plugins: { title: { display: true, text: 'Top 10 Countries by Population', font: { size: 16, weight: '600' } }, legend: { display: false } }, scales: { y: { beginAtZero: true } } }
+  });
+  new Chart(document.getElementById('topCountriesArableChart'), {
+    type: 'bar',
+    data: { labels: top10Arable.map(c => c.name), datasets: [{ label: 'Arable Land', data: top10Arable.map(c => c.arable), backgroundColor: top10Arable.map(c => c.isPlayer ? '#1D9E75' : '#E67E22') }] },
+    options: { indexAxis: 'y', plugins: { title: { display: true, text: 'Top 10 Countries by Arable Land', font: { size: 16, weight: '600' } }, legend: { display: false } } }
+  });
+  new Chart(document.getElementById('topStatesPopChart'), {
+    type: 'bar',
+    data: { labels: top10States.map(s => s.name), datasets: [{ label: 'Population', data: top10States.map(s => s.pop), backgroundColor: '#9B59B6' }] },
+    options: { plugins: { title: { display: true, text: 'Top 10 Most Populous States', font: { size: 16, weight: '600' } }, legend: { display: false } } }
+  });
+}
+<\/script>
+</body>
+</html>`;
+}
+
+// ── File handling ─────────────────────────────────────────────────────────────
+
+function handleFile(file) {
+  const errEl = document.getElementById('errorMsg');
+  errEl.classList.remove('visible');
+  document.getElementById('progressArea').classList.add('visible');
+  setProgress(5, 'Reading file…');
+
+  const reader = new FileReader();
+  reader.onload = async function(e) {
+    try {
+      let text;
+
+      // Try to unzip — .v3 files are zip archives containing a 'gamestate' entry
+      try {
+        setProgress(8, 'Extracting save archive…');
+        const zip = await JSZip.loadAsync(e.target.result);
+        const gamestate = zip.file('gamestate');
+        if (!gamestate) {
+          showError('Could not find a "gamestate" file inside the archive. Make sure you are uploading a valid .v3 file.');
+          return;
+        }
+        setProgress(10, 'Decompressing gamestate…');
+        text = await gamestate.async('string');
+      } catch (zipErr) {
+        // Not a zip — try reading as plain text (e.g. already-extracted gamestate)
+        setProgress(10, 'Reading as plain text…');
+        text = new TextDecoder('utf-8').decode(e.target.result);
+      }
+
+      const data = parseSave(text);
+      setProgress(98, 'Opening viewer…');
+      const html = buildViewerHTML(data);
+      const blob = new Blob([html], { type: 'text/html' });
+      const url = URL.createObjectURL(blob);
+      const win = window.open(url, '_blank');
+      if (!win) {
+        showError('Pop-up blocked — please allow pop-ups for this site and try again.');
+        return;
+      }
+      setProgress(100, 'Done!');
+      setTimeout(() => URL.revokeObjectURL(url), 60000);
+    } catch (err) {
+      showError('Parsing failed: ' + err.message);
+      console.error(err);
+    }
+  };
+  reader.onerror = () => showError('Could not read the file.');
+  reader.readAsArrayBuffer(file);
+}
+
+// ── Event listeners ───────────────────────────────────────────────────────────
+
+document.getElementById('fileInput').addEventListener('change', e => {
+  if (e.target.files[0]) handleFile(e.target.files[0]);
+});
+
+const dz = document.getElementById('dropZone');
+dz.addEventListener('dragover', e => { e.preventDefault(); dz.classList.add('drag-over'); });
+dz.addEventListener('dragleave', () => dz.classList.remove('drag-over'));
+dz.addEventListener('drop', e => {
+  e.preventDefault();
+  dz.classList.remove('drag-over');
+  if (e.dataTransfer.files[0]) handleFile(e.dataTransfer.files[0]);
+});
+</script>
+</body>
+</html>
