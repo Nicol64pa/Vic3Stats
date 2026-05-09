@@ -41,6 +41,23 @@
 
   .footer-note { margin-top: 3rem; font-size: 0.78rem; color: #4a4030; line-height: 1.6; }
   .footer-note i { vertical-align: -2px; }
+
+  .guide { margin-top: 1.5rem; border: 1px solid #3a3228; border-radius: 10px; overflow: hidden; text-align: left; }
+  .guide-header { display: flex; justify-content: space-between; align-items: center; padding: 0.85rem 1.1rem; cursor: pointer; font-size: 0.88rem; color: #c8a84b; font-weight: 500; background: #221e18; user-select: none; }
+  .guide-header:hover { background: #2a251d; }
+  .guide-chevron { font-size: 14px; color: #c8a84b; transition: transform 0.2s; }
+  .guide-chevron.open { transform: rotate(180deg); }
+  .guide-body { display: none; padding: 1rem 1.1rem; background: #1e1a15; border-top: 1px solid #3a3228; }
+  .guide-body.open { display: block; }
+  .guide-step { display: flex; gap: 0.9rem; margin-bottom: 1rem; }
+  .guide-step:last-child { margin-bottom: 0; }
+  .guide-step-num { flex-shrink: 0; width: 22px; height: 22px; border-radius: 50%; background: #c8a84b; color: #1a1612; font-size: 0.75rem; font-weight: 700; display: flex; align-items: center; justify-content: center; margin-top: 1px; }
+  .guide-step-text { font-size: 0.83rem; color: #a09070; line-height: 1.6; }
+  .guide-step-text a { color: #c8a84b; text-decoration: none; border-bottom: 1px solid #5a4e38; }
+  .guide-step-text a:hover { border-color: #c8a84b; }
+  .guide-step-text strong { color: #d8c898; }
+  .guide-step-text em { color: #8a7a60; font-style: normal; }
+  kbd { background: #2a251d; border: 1px solid #5a4e38; border-radius: 4px; padding: 1px 5px; font-size: 0.78rem; color: #c8a84b; font-family: monospace; }
 </style>
 </head>
 <body>
@@ -50,9 +67,9 @@
   <p class="subtitle">Parse and explore your multiplayer save files</p>
 
   <div class="drop-zone" id="dropZone">
-    <input type="file" id="fileInput" accept=".v3,.zip" />
+    <input type="file" id="fileInput" accept=".v3save,.zip" />
     <i class="ti ti-file-upload icon" aria-hidden="true"></i>
-    <p><strong>Click to select</strong> or drag and drop your <code>.v3</code> file here.<br>The file is extracted and parsed entirely in your browser.</p>
+    <p><strong>Click to select</strong> or drag and drop your <code>.v3save</code> file here.<br>The file is extracted and parsed entirely in your browser.</p>
   </div>
 
   <div class="progress-area" id="progressArea">
@@ -66,10 +83,47 @@
     <i class="ti ti-lock" aria-hidden="true"></i>
     Your save file is processed entirely in your browser and never uploaded anywhere.
   </p>
+
+  <div class="guide">
+    <div class="guide-header" onclick="toggleGuide(this)">
+      <span><i class="ti ti-settings" style="vertical-align:-2px;margin-right:6px" aria-hidden="true"></i>How to enable text save format</span>
+      <i class="ti ti-chevron-down guide-chevron" aria-hidden="true"></i>
+    </div>
+    <div class="guide-body">
+      <div class="guide-step">
+        <div class="guide-step-num">1</div>
+        <div class="guide-step-text">
+          Enable debug mode to unlock save format settings. You can do this via launch options or a mod — see the
+          <a href="https://vic3.paradoxwikis.com/Console_commands#Enabling_debug_mode" target="_blank" rel="noopener">Victoria 3 wiki</a> for instructions.
+        </div>
+      </div>
+      <div class="guide-step">
+        <div class="guide-step-num">2</div>
+        <div class="guide-step-text">
+          In-game, open the console (<kbd>`</kbd> or <kbd>~</kbd>), then click <strong>Master Settings</strong>.
+        </div>
+      </div>
+      <div class="guide-step">
+        <div class="guide-step-num">3</div>
+        <div class="guide-step-text">
+          Change <strong>Default Save Format</strong> from <em>Zipped Binary</em> to either:
+          <ul style="margin-top:0.4rem;padding-left:1.2rem;">
+            <li><strong>Text</strong> — plain text, works directly with this tool</li>
+            <li><strong>Zipped Text</strong> — smaller file size, also supported (just upload the zip)</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </div>
 </div>
 
 <script>
 // ── Utilities ────────────────────────────────────────────────────────────────
+
+function toggleGuide(header) {
+  header.querySelector('.guide-chevron').classList.toggle('open');
+  header.nextElementSibling.classList.toggle('open');
+}
 
 function setProgress(pct, label) {
   document.getElementById('progressFill').style.width = pct + '%';
@@ -785,7 +839,6 @@ function renderStats() {
 </body>
 </html>`;
 }
-
 // ── File handling ─────────────────────────────────────────────────────────────
 
 function handleFile(file) {
@@ -799,13 +852,13 @@ function handleFile(file) {
     try {
       let text;
 
-      // Try to unzip — .v3 files are zip archives containing a 'gamestate' entry
+      // Try to unzip — .v3save files are zip archives containing a 'gamestate' entry
       try {
         setProgress(8, 'Extracting save archive…');
         const zip = await JSZip.loadAsync(e.target.result);
         const gamestate = zip.file('gamestate');
         if (!gamestate) {
-          showError('Could not find a "gamestate" file inside the archive. Make sure you are uploading a valid .v3 file.');
+          showError('Could not find a "gamestate" file inside the archive. Make sure you are uploading a valid .v3save file.');
           return;
         }
         setProgress(10, 'Decompressing gamestate…');
