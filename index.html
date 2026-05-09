@@ -110,37 +110,80 @@ function parseSave(text) {
   }
 
   // ── Countries ──────────────────────────────────────────────────────────────
-  function parseCountries() {
-    let depth = 0, inside = false;
-    const dict = {};
-    while (true) {
-      const line = readline();
-      if (line === null) break;
-      const prevDepth = depth;
-      if (line.includes('{') || line.includes('}')) depth = updateDepth(line, depth);
-      if (line === 'country_manager={' && prevDepth === 0) inside = true;
-      if (inside && depth === 1 && prevDepth === 2) break;
-      if (inside && prevDepth === 2 && isNumeric(line.split('=')[0])) {
-        const parts = line.split('=');
-        if (parts[1] && parts[1].trim() !== 'none') {
-          const countryId = parts[0].trim();
-          while (true) {
-            const l2 = readline();
-            if (l2 === null) break;
-            const pd2 = depth;
-            if (l2.includes('{') || l2.includes('}')) depth = updateDepth(l2, depth);
-            if (pd2 === 3 && depth === 2) break;
-            if (l2.split('=')[0].trim() === 'definition') {
-              const name = l2.split('=')[1].trim().replace(/"/g, '');
-              dict[countryId] = { id: countryId, def: name, states: [], player: null };
-              break;
-            }
+function parseCountries() {
+  let depth = 0, inside = false;
+  const dict = {};
+  while (true) {
+    const line = readline();
+    if (line === null) break;
+    const prevDepth = depth;
+    if (line.includes('{') || line.includes('}')) depth = updateDepth(line, depth);
+    if (line === 'country_manager={' && prevDepth === 0) inside = true;
+    if (inside && depth === 1 && prevDepth === 2) break;
+    if (inside && prevDepth === 2 && isNumeric(line.split('=')[0])) {
+      const parts = line.split('=');
+      if (parts[1] && parts[1].trim() !== 'none') {
+        const countryId = parts[0].trim();
+        let name = null;
+        let gdp = [], prestige = [], literacy = [], avgsoltrend = [];
+        let currentStat = null; // which stat we're currently collecting values for
+
+        while (true) {
+          const l2 = readline();
+          if (l2 === null) break;
+          const pd2 = depth;
+          if (l2.includes('{') || l2.includes('}')) depth = updateDepth(l2, depth);
+
+          // Exit country block
+          if (pd2 === 3 && depth === 2) break;
+
+          const k = l2.split('=')[0].trim();
+
+          // Capture definition
+          if (k === 'definition') {
+            name = l2.split('=')[1].trim().replace(/"/g, '');
           }
+
+          // Detect which stat block we're entering
+          if (k === 'gdp' && l2.includes('{')) currentStat = 'gdp';
+          else if (k === 'prestige' && l2.includes('{')) currentStat = 'prestige';
+          else if (k === 'literacy' && l2.includes('{')) currentStat = 'literacy';
+          else if (k === 'avgsoltrend' && l2.includes('{')) currentStat = 'avgsoltrend';
+
+          // Capture values line — may span multiple lines so collect until block closes
+          if (currentStat && k === 'values') {
+            let valStr = l2.includes('{') ? l2.substring(l2.indexOf('{') + 1) : '';
+            // Keep reading until we find the closing }
+            while (!valStr.includes('}')) {
+              const nextLine = readline();
+              if (nextLine === null) break;
+              if (nextLine.includes('{') || nextLine.includes('}')) depth = updateDepth(nextLine, depth);
+              valStr += ' ' + nextLine;
+            }
+            // Strip the closing } and anything after
+            valStr = valStr.substring(0, valStr.lastIndexOf('}')).trim();
+            const nums = valStr.trim().split(/\s+/).filter(s => s.length > 0).map(Number).filter(n => !isNaN(n));
+
+            if (currentStat === 'gdp') gdp = nums;
+            else if (currentStat === 'prestige') prestige = nums;
+            else if (currentStat === 'literacy') literacy = nums;
+            else if (currentStat === 'avgsoltrend') avgsoltrend = nums;
+
+            currentStat = null; // reset after capturing
+          }
+        }
+
+        if (name) {
+          dict[countryId] = {
+            id: countryId, def: name, states: [], player: null,
+            gdp, prestige, literacy, avgsoltrend
+          };
         }
       }
     }
-    return dict;
   }
+  return dict;
+}
 
   // ── States ─────────────────────────────────────────────────────────────────
   function parseStates(countries) {
@@ -355,7 +398,7 @@ function buildViewerHTML(rawData) {
   .tab-btn.active { color: #1D9E75; background: #e3efea; }
   .section { display: none; }
   .section.active { display: block; }
-  input[type=text] { width: 100%; box-sizing: border-box; padding: 10px 14px; font-size: 14px; border: 1px solid #ccc; border-radius: 8px; margin-bottom: 1rem; background: #fff; }
+  input[type=text], select { width: 100%; box-sizing: border-box; padding: 10px 14px; font-size: 14px; border: 1px solid #ccc; border-radius: 8px; margin-bottom: 1rem; background: #fff; }
   .country-card { background: #fff; border: 1px solid #ddd; border-radius: 12px; margin-bottom: 10px; overflow: hidden; }
   .country-card.player-card { border-color: #1D9E75; border-width: 2px; }
   .country-header { display: flex; align-items: center; justify-content: space-between; padding: 12px 16px; cursor: pointer; user-select: none; }
@@ -406,6 +449,14 @@ function buildViewerHTML(rawData) {
   .chart-full { grid-column: 1 / -1; }
   @media (max-width: 900px) { .charts-layout { grid-template-columns: 1fr; } }
   .empty { text-align: center; padding: 3rem; color: #aaa; font-size: 16px; }
+  .current-stats-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 1rem; margin-bottom: 2rem; }
+  @media (max-width: 900px) { .current-stats-grid { grid-template-columns: repeat(2, 1fr); } }
+  .current-stat-card { background: #fff; padding: 1.2rem 1.5rem; border-radius: 12px; border: 1px solid #ddd; }
+  .current-stat-label { font-size: 12px; color: #888; text-transform: uppercase; letter-spacing: 0.5px; font-weight: 600; margin-bottom: 0.3rem; }
+  .current-stat-value { font-size: 22px; font-weight: bold; color: #1a1a1a; }
+  .current-stat-trend { font-size: 12px; margin-top: 2px; }
+  .trend-up { color: #1D9E75; }
+  .trend-down { color: #e74c3c; }
 </style>
 </head>
 <body>
@@ -413,6 +464,7 @@ function buildViewerHTML(rawData) {
 <div class="tabs">
   <button class="tab-btn active" onclick="switchTab('viewer', this)">Data Viewer</button>
   <button class="tab-btn" onclick="switchTab('stats', this)">Global Stats</button>
+  <button class="tab-btn" onclick="switchTab('country', this)">Country Charts</button>
 </div>
 <div id="viewer" class="section active">
   <input type="text" placeholder="Search countries, players, or regions…" id="search" oninput="renderList()" />
@@ -432,9 +484,122 @@ function buildViewerHTML(rawData) {
     <div class="chart-card chart-full"><canvas id="topStatesPopChart"></canvas></div>
   </div>
 </div>
+<div id="country" class="section">
+  <select id="countrySelect" onchange="renderCountryCharts()">
+    <option value="">— Select a country —</option>
+  </select>
+  <div id="currentStats"></div>
+  <div class="charts-layout" id="countryCharts" style="display:none">
+    <div class="chart-card chart-full"><canvas id="gdpChart"></canvas></div>
+    <div class="chart-card chart-full"><canvas id="prestigeChart"></canvas></div>
+    <div class="chart-card"><canvas id="literacyChart"></canvas></div>
+    <div class="chart-card"><canvas id="soltrendChart"></canvas></div>
+  </div>
+</div>
 <script>
 const RAW = ${raw_json};
 const maxArable = Math.max(...RAW.flatMap(c => c.states.map(s => s.arable)), 1);
+
+// Populate country select on load
+window.addEventListener('load', () => {
+  const sel = document.getElementById('countrySelect');
+  const sorted = [...RAW].sort((a, b) => {
+    if (a.player && !b.player) return -1;
+    if (!a.player && b.player) return 1;
+    return a.def.localeCompare(b.def);
+  });
+  sorted.forEach(c => {
+    const opt = document.createElement('option');
+    opt.value = c.id;
+    opt.textContent = c.player ? c.def + ' (' + c.player + ')' : c.def;
+    sel.appendChild(opt);
+  });
+});
+
+let countryChartInstances = {};
+
+function renderCountryCharts() {
+  const id = document.getElementById('countrySelect').value;
+  if (!id) { document.getElementById('countryCharts').style.display = 'none'; document.getElementById('currentStats').innerHTML = ''; return; }
+  const c = RAW.find(x => x.id === id);
+  if (!c) return;
+
+  // Destroy old chart instances
+  Object.values(countryChartInstances).forEach(ch => ch.destroy());
+  countryChartInstances = {};
+
+  document.getElementById('countryCharts').style.display = 'grid';
+
+  // Current stats summary
+  const latestGdp = c.gdp.length ? c.gdp[c.gdp.length - 1] : null;
+  const latestPrestige = c.prestige.length ? c.prestige[c.prestige.length - 1] : null;
+  const latestLiteracy = c.literacy.length ? c.literacy[c.literacy.length - 1] : null;
+  const latestSol = c.avgsoltrend.length ? c.avgsoltrend[c.avgsoltrend.length - 1] : null;
+
+  function trendHtml(arr) {
+    if (arr.length < 2) return '';
+    const diff = arr[arr.length - 1] - arr[arr.length - 2];
+    const pct = ((Math.abs(diff) / Math.abs(arr[arr.length - 2])) * 100).toFixed(2);
+    const cls = diff >= 0 ? 'trend-up' : 'trend-down';
+    const arrow = diff >= 0 ? '▲' : '▼';
+    return \`<div class="current-stat-trend \${cls}">\${arrow} \${pct}%</div>\`;
+  }
+
+  document.getElementById('currentStats').innerHTML = \`
+    <div class="current-stats-grid">
+      <div class="current-stat-card">
+        <div class="current-stat-label">GDP</div>
+        <div class="current-stat-value">\${latestGdp !== null ? (latestGdp / 1e6).toFixed(1) + 'M' : 'N/A'}</div>
+        \${trendHtml(c.gdp)}
+      </div>
+      <div class="current-stat-card">
+        <div class="current-stat-label">Prestige</div>
+        <div class="current-stat-value">\${latestPrestige !== null ? Math.round(latestPrestige).toLocaleString() : 'N/A'}</div>
+        \${trendHtml(c.prestige)}
+      </div>
+      <div class="current-stat-card">
+        <div class="current-stat-label">Literacy</div>
+        <div class="current-stat-value">\${latestLiteracy !== null ? (latestLiteracy * 100).toFixed(1) + '%' : 'N/A'}</div>
+        \${trendHtml(c.literacy)}
+      </div>
+      <div class="current-stat-card">
+        <div class="current-stat-label">Avg SoL Trend</div>
+        <div class="current-stat-value">\${latestSol !== null ? latestSol.toFixed(2) : 'N/A'}</div>
+        \${trendHtml(c.avgsoltrend)}
+      </div>
+    </div>\`;
+
+  Chart.defaults.font.family = 'system-ui, sans-serif';
+  Chart.defaults.color = '#666';
+
+  const labels = c.gdp.map((_, i) => i + 1);
+
+  function makeLineChart(canvasId, label, data, color) {
+    // Downsample to max 300 points for performance
+    let pts = data, lbs = labels.slice(0, data.length);
+    if (data.length > 300) {
+      const step = Math.floor(data.length / 300);
+      pts = data.filter((_, i) => i % step === 0);
+      lbs = lbs.filter((_, i) => i % step === 0);
+    }
+    countryChartInstances[canvasId] = new Chart(document.getElementById(canvasId), {
+      type: 'line',
+      data: {
+        labels: lbs,
+        datasets: [{ label, data: pts, borderColor: color, backgroundColor: color + '22', borderWidth: 1.5, pointRadius: 0, fill: true, tension: 0.3 }]
+      },
+      options: {
+        plugins: { title: { display: true, text: label, font: { size: 16, weight: '600' } }, legend: { display: false } },
+        scales: { x: { display: false }, y: { beginAtZero: false } }
+      }
+    });
+  }
+
+  makeLineChart('gdpChart', 'GDP Over Time', c.gdp, '#1D9E75');
+  makeLineChart('prestigeChart', 'Prestige Over Time', c.prestige, '#9B59B6');
+  makeLineChart('literacyChart', 'Literacy Rate Over Time', c.literacy, '#3498DB');
+  makeLineChart('soltrendChart', 'Avg Standard of Living Over Time', c.avgsoltrend, '#E67E22');
+}
 
 function fmt(str) {
   if (!str) return 'Unknown';
