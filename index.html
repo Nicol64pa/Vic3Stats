@@ -510,10 +510,17 @@ function buildViewerHTML(rawData) {
   .chart-full { grid-column: 1 / -1; }
   @media (max-width: 900px) { .charts-layout { grid-template-columns: 1fr; } }
   .empty { text-align: center; padding: 3rem; color: #aaa; font-size: 16px; }
-  .current-stats-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 1rem; margin-bottom: 2rem; }
-  @media (max-width: 900px) { .current-stats-grid { grid-template-columns: repeat(2, 1fr); } }
+  .current-stats-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1rem; margin-bottom: 1rem; }
+  .current-stats-grid.finance-row { grid-template-columns: repeat(2, 1fr); margin-bottom: 2rem; }
+  @media (max-width: 900px) { .current-stats-grid { grid-template-columns: repeat(2, 1fr); } .current-stats-grid.finance-row { grid-template-columns: 1fr; } }
   .current-stat-card { background: #fff; padding: 1.2rem 1.5rem; border-radius: 12px; border: 1px solid #ddd; }
+  .current-stat-card.finance-card { border-color: #b8860b; background: #fffdf5; }
+  .current-stat-card.radicals-card { border-color: #e74c3c; background: #fff5f5; }
+  .current-stat-card.loyalists-card { border-color: #3498db; background: #f5f9ff; }
   .current-stat-label { font-size: 12px; color: #888; text-transform: uppercase; letter-spacing: 0.5px; font-weight: 600; margin-bottom: 0.3rem; }
+  .current-stat-card.finance-card .current-stat-label { color: #b8860b; }
+  .current-stat-card.radicals-card .current-stat-label { color: #c0392b; }
+  .current-stat-card.loyalists-card .current-stat-label { color: #2980b9; }
   .current-stat-value { font-size: 22px; font-weight: bold; color: #1a1a1a; }
   .current-stat-trend { font-size: 12px; margin-top: 2px; }
   .trend-up { color: #1D9E75; }
@@ -555,6 +562,8 @@ function buildViewerHTML(rawData) {
     <div class="chart-card chart-full"><canvas id="prestigeChart"></canvas></div>
     <div class="chart-card"><canvas id="literacyChart"></canvas></div>
     <div class="chart-card"><canvas id="soltrendChart"></canvas></div>
+    <div class="chart-card"><canvas id="radicalsChart"></canvas></div>
+    <div class="chart-card"><canvas id="loyalistsChart"></canvas></div>
   </div>
 </div>
 <script>
@@ -596,6 +605,8 @@ function renderCountryCharts() {
   const latestPrestige = c.prestige.length ? c.prestige[c.prestige.length - 1] : null;
   const latestLiteracy = c.literacy.length ? c.literacy[c.literacy.length - 1] : null;
   const latestSol = c.avgsoltrend.length ? c.avgsoltrend[c.avgsoltrend.length - 1] : null;
+  const latestRadicals = c.trend_radicals.length ? c.trend_radicals[c.trend_radicals.length - 1] : null;
+  const latestLoyalists = c.trend_loyalists.length ? c.trend_loyalists[c.trend_loyalists.length - 1] : null;
 
   function trendHtml(arr) {
     if (arr.length < 2) return '';
@@ -604,6 +615,24 @@ function renderCountryCharts() {
     const cls = diff >= 0 ? 'trend-up' : 'trend-down';
     const arrow = diff >= 0 ? '▲' : '▼';
     return \`<div class="current-stat-trend \${cls}">\${arrow} \${pct}%</div>\`;
+  }
+
+  // For radicals, rising is bad; for loyalists, rising is good — invert colours
+  function trendHtmlInverted(arr) {
+    if (arr.length < 2) return '';
+    const diff = arr[arr.length - 1] - arr[arr.length - 2];
+    const pct = ((Math.abs(diff) / Math.abs(arr[arr.length - 2])) * 100).toFixed(2);
+    const cls = diff >= 0 ? 'trend-down' : 'trend-up';
+    const arrow = diff >= 0 ? '▲' : '▼';
+    return \`<div class="current-stat-trend \${cls}">\${arrow} \${pct}%</div>\`;
+  }
+
+  // Format credit/principal as plain numbers (they're raw save values)
+  function fmtFinance(val) {
+    if (val === null || val === undefined) return 'N/A';
+    const n = parseFloat(val);
+    if (isNaN(n)) return val;
+    return n.toLocaleString(undefined, { maximumFractionDigits: 2 });
   }
 
   document.getElementById('currentStats').innerHTML = \`
@@ -627,6 +656,26 @@ function renderCountryCharts() {
         <div class="current-stat-label">Avg SoL Trend</div>
         <div class="current-stat-value">\${latestSol !== null ? latestSol.toFixed(2) : 'N/A'}</div>
         \${trendHtml(c.avgsoltrend)}
+      </div>
+      <div class="current-stat-card radicals-card">
+        <div class="current-stat-label">Radical Trend</div>
+        <div class="current-stat-value">\${latestRadicals !== null ? latestRadicals.toFixed(2) : 'N/A'}</div>
+        \${trendHtmlInverted(c.trend_radicals)}
+      </div>
+      <div class="current-stat-card loyalists-card">
+        <div class="current-stat-label">Loyalist Trend</div>
+        <div class="current-stat-value">\${latestLoyalists !== null ? latestLoyalists.toFixed(2) : 'N/A'}</div>
+        \${trendHtml(c.trend_loyalists)}
+      </div>
+    </div>
+    <div class="current-stats-grid finance-row">
+      <div class="current-stat-card finance-card">
+        <div class="current-stat-label"><i class="ti ti-coins" style="vertical-align:-2px;margin-right:4px" aria-hidden="true"></i>Credit</div>
+        <div class="current-stat-value">\${fmtFinance(c.credit)}</div>
+      </div>
+      <div class="current-stat-card finance-card">
+        <div class="current-stat-label"><i class="ti ti-receipt" style="vertical-align:-2px;margin-right:4px" aria-hidden="true"></i>Principal</div>
+        <div class="current-stat-value">\${fmtFinance(c.principal)}</div>
       </div>
     </div>\`;
 
@@ -660,11 +709,13 @@ function renderCountryCharts() {
   makeLineChart('prestigeChart', 'Prestige Over Time', c.prestige, '#9B59B6');
   makeLineChart('literacyChart', 'Literacy Rate Over Time', c.literacy, '#3498DB');
   makeLineChart('soltrendChart', 'Avg Standard of Living Over Time', c.avgsoltrend, '#E67E22');
+  makeLineChart('radicalsChart', 'Radical Trend Over Time', c.trend_radicals, '#E74C3C');
+  makeLineChart('loyalistsChart', 'Loyalist Trend Over Time', c.trend_loyalists, '#3498DB');
 }
 
 function fmt(str) {
   if (!str) return 'Unknown';
-  return str.replace(/^(STATE_|building_|pop_)/, '').replace(/_/g, ' ').toLowerCase().replace(/\\b\\w/g, c => c.toUpperCase());
+  return str.replace(/^(STATE_|building_|pop_)/, '').replace(/_/g, ' ').toLowerCase().replace(/\b\w/g, c => c.toUpperCase());
 }
 
 function switchTab(tabId, btn) {
