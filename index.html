@@ -67,9 +67,9 @@
   <p class="subtitle">Parse and explore your multiplayer save files</p>
 
   <div class="drop-zone" id="dropZone">
-    <input type="file" id="fileInput" accept=".v3save,.zip" />
+    <input type="file" id="fileInput" accept=".v3,.zip" />
     <i class="ti ti-file-upload icon" aria-hidden="true"></i>
-    <p><strong>Click to select</strong> or drag and drop your <code>.v3save</code> file here.<br>The file is extracted and parsed entirely in your browser.</p>
+    <p><strong>Click to select</strong> or drag and drop your <code>.v3</code> file here.<br>The file is extracted and parsed entirely in your browser.</p>
   </div>
 
   <div class="progress-area" id="progressArea">
@@ -178,8 +178,8 @@ function parseCountries() {
       const parts = line.split('=');
       if (parts[1] && parts[1].trim() !== 'none') {
         const countryId = parts[0].trim();
-        let name = null;
-        let gdp = [], prestige = [], literacy = [], avgsoltrend = [];
+        let name = null, credit = null, principal = null;
+        let gdp = [], prestige = [], literacy = [], avgsoltrend = [], trend_radicals = [], trend_loyalists = [];
         let currentStat = null; // which stat we're currently collecting values for
 
         while (true) {
@@ -197,13 +197,19 @@ function parseCountries() {
           if (k === 'definition') {
             name = l2.split('=')[1].trim().replace(/"/g, '');
           }
-
+          if (k === 'credit') {
+            credit = l2.split('=')[1].trim();
+          }
+          if (k === 'principal') {
+            principal = l2.split('=')[1].trim();
+          }
           // Detect which stat block we're entering
           if (k === 'gdp' && l2.includes('{')) currentStat = 'gdp';
           else if (k === 'prestige' && l2.includes('{')) currentStat = 'prestige';
           else if (k === 'literacy' && l2.includes('{')) currentStat = 'literacy';
           else if (k === 'avgsoltrend' && l2.includes('{')) currentStat = 'avgsoltrend';
-
+          else if (k === 'trend_radicals' && l2.includes('{')) currentStat = 'trend_radicals';
+          else if (k === 'trend_loyalists' && l2.includes('{')) currentStat = 'trend_loyalists';
           // Capture values line — may span multiple lines so collect until block closes
           if (currentStat && k === 'values') {
             let valStr = l2.includes('{') ? l2.substring(l2.indexOf('{') + 1) : '';
@@ -222,7 +228,8 @@ function parseCountries() {
             else if (currentStat === 'prestige') prestige = nums;
             else if (currentStat === 'literacy') literacy = nums;
             else if (currentStat === 'avgsoltrend') avgsoltrend = nums;
-
+            else if (currentStat === 'trend_radicals') trend_radicals = nums;
+            else if (currentStat === 'trend_loyalists') trend_loyalists = nums;
             currentStat = null; // reset after capturing
           }
         }
@@ -230,7 +237,7 @@ function parseCountries() {
         if (name) {
           dict[countryId] = {
             id: countryId, def: name, states: [], player: null,
-            gdp, prestige, literacy, avgsoltrend
+            gdp, prestige, literacy, avgsoltrend, trend_radicals, trend_loyalists, credit, principal
           };
         }
       }
@@ -839,6 +846,7 @@ function renderStats() {
 </body>
 </html>`;
 }
+
 // ── File handling ─────────────────────────────────────────────────────────────
 
 function handleFile(file) {
@@ -852,13 +860,13 @@ function handleFile(file) {
     try {
       let text;
 
-      // Try to unzip — .v3save files are zip archives containing a 'gamestate' entry
+      // Try to unzip — .v3 files are zip archives containing a 'gamestate' entry
       try {
         setProgress(8, 'Extracting save archive…');
         const zip = await JSZip.loadAsync(e.target.result);
         const gamestate = zip.file('gamestate');
         if (!gamestate) {
-          showError('Could not find a "gamestate" file inside the archive. Make sure you are uploading a valid .v3save file.');
+          showError('Could not find a "gamestate" file inside the archive. Make sure you are uploading a valid .v3 file.');
           return;
         }
         setProgress(10, 'Decompressing gamestate…');
