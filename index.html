@@ -179,8 +179,22 @@ function parseCountries() {
       if (parts[1] && parts[1].trim() !== 'none') {
         const countryId = parts[0].trim();
         let name = null, credit = null, principal = null;
+        let buildingExpense = null, buildingIncome = null;
+        let expensesBreakdown = {}, incomesBreakdown = {};
         let gdp = [], prestige = [], literacy = [], avgsoltrend = [], trend_radicals = [], trend_loyalists = [];
         let currentStat = null; // which stat we're currently collecting values for
+        let inBuildingBudget = false; // true while inside country_building_budget block
+        let buildingBudgetDepth = -1; // depth at which the building budget block sits
+        // Breakdown parsing state machine:
+        //   side: 'expenses' or 'incomes' when inside one of those top-level blocks
+        //   sideDepth: the depth at which that block opened
+        //   category: the current category name (e.g. 'government_goods') we're inside
+        //   categoryDepth: depth at which category opened
+        //   inValues: true while inside that category's values={} block
+        //   valuesDepth: depth at which values opened
+        let side = null, sideDepth = -1;
+        let category = null, categoryDepth = -1;
+        let inValues = false, valuesDepth = -1;
 
         while (true) {
           const l2 = readline();
@@ -193,6 +207,90 @@ function parseCountries() {
 
           const k = l2.split('=')[0].trim();
 
+          // Track entry/exit of country_building_budget block
+          if (k === 'country_building_budget' && l2.includes('{')) {
+            inBuildingBudget = true;
+            buildingBudgetDepth = pd2; // remember the depth at which it opened
+          } else if (inBuildingBudget && depth <= buildingBudgetDepth) {
+            inBuildingBudget = false;
+            side = null; category = null; inValues = false;
+          }
+
+          // Inside country_building_budget, track expenses/incomes breakdown.
+          // The save uses a compact format where a line may contain both a closing
+          // brace and a new key=value pair (e.g. "}\t\tgovernment_wages={"). We split
+          // each line into segments at brace boundaries and update our state machine
+          // per segment, while replaying the depth changes implied by each segment.
+          if (inBuildingBudget) {
+            // Build segments: each segment is either '{', '}', or 'key=...' (possibly with trailing '{')
+            const segments = [];
+            { // local scope
+              let buf = '';
+              for (const ch of l2) {
+                if (ch === '{' || ch === '}') {
+                  const t = buf.trim();
+                  if (t.length > 0) segments.push(t);
+                  segments.push(ch);
+                  buf = '';
+                } else {
+                  buf += ch;
+                }
+              }
+              const t = buf.trim();
+              if (t.length > 0) segments.push(t);
+            }
+
+            // Replay segments. Track a running "segment depth" starting from pd2
+            // (the depth before this line was processed). For each segment we adjust
+            // segDepth then apply state-machine logic.
+            let segDepth = pd2;
+            for (let si = 0; si < segments.length; si++) {
+              const seg = segments[si];
+
+              if (seg === '{') {
+                segDepth++;
+                continue;
+              }
+              if (seg === '}') {
+                segDepth--;
+                // Close enclosing blocks if we've descended past them
+                if (inValues && segDepth < valuesDepth) inValues = false;
+                if (category !== null && segDepth < categoryDepth) category = null;
+                if (side !== null && segDepth < sideDepth) side = null;
+                continue;
+              }
+
+              // seg is a content segment like "key=value" or "key" (when followed by '{')
+              const eqIdx = seg.indexOf('=');
+              const segKey = eqIdx >= 0 ? seg.substring(0, eqIdx).trim() : seg.trim();
+              // Determine if this segment is immediately followed by an opening brace
+              const opensBlock = segments[si + 1] === '{';
+
+              if (side === null && (segKey === 'expenses' || segKey === 'incomes') && opensBlock) {
+                side = segKey;
+                sideDepth = segDepth + 1; // depth inside the block after the '{'
+              }
+              else if (side !== null && category === null && opensBlock && segKey && segDepth === sideDepth) {
+                category = segKey;
+                categoryDepth = segDepth + 1;
+                const target = side === 'expenses' ? expensesBreakdown : incomesBreakdown;
+                if (!target[category]) target[category] = {};
+              }
+              else if (category !== null && segKey === 'values' && opensBlock) {
+                inValues = true;
+                valuesDepth = segDepth + 1;
+              }
+              else if (inValues && eqIdx >= 0 && !opensBlock) {
+                // A pure key=value entry inside values={}
+                const v = parseFloat(seg.substring(eqIdx + 1));
+                if (!isNaN(v) && segKey) {
+                  const target = side === 'expenses' ? expensesBreakdown : incomesBreakdown;
+                  target[category][segKey] = v;
+                }
+              }
+            }
+          }
+
           // Capture definition
           if (k === 'definition') {
             name = l2.split('=')[1].trim().replace(/"/g, '');
@@ -202,6 +300,14 @@ function parseCountries() {
           }
           if (k === 'principal') {
             principal = l2.split('=')[1].trim();
+          }
+          // Capture building-budget scalar expense/income (only the direct fields,
+          // not the nested `expenses={}` / `incomes={}` blocks)
+          if (inBuildingBudget && k === 'expense' && !l2.includes('{')) {
+            buildingExpense = l2.split('=')[1].trim();
+          }
+          if (inBuildingBudget && k === 'income' && !l2.includes('{')) {
+            buildingIncome = l2.split('=')[1].trim();
           }
           // Detect which stat block we're entering
           if (k === 'gdp' && l2.includes('{')) currentStat = 'gdp';
@@ -237,7 +343,9 @@ function parseCountries() {
         if (name) {
           dict[countryId] = {
             id: countryId, def: name, states: [], player: null,
-            gdp, prestige, literacy, avgsoltrend, trend_radicals, trend_loyalists, credit, principal
+            gdp, prestige, literacy, avgsoltrend, trend_radicals, trend_loyalists,
+            credit, principal, buildingExpense, buildingIncome,
+            expensesBreakdown, incomesBreakdown
           };
         }
       }
@@ -511,20 +619,49 @@ function buildViewerHTML(rawData) {
   @media (max-width: 900px) { .charts-layout { grid-template-columns: 1fr; } }
   .empty { text-align: center; padding: 3rem; color: #aaa; font-size: 16px; }
   .current-stats-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1rem; margin-bottom: 1rem; }
-  .current-stats-grid.finance-row { grid-template-columns: repeat(2, 1fr); margin-bottom: 2rem; }
-  @media (max-width: 900px) { .current-stats-grid { grid-template-columns: repeat(2, 1fr); } .current-stats-grid.finance-row { grid-template-columns: 1fr; } }
+  .current-stats-grid.finance-row { grid-template-columns: repeat(4, 1fr); margin-bottom: 1rem; }
+  @media (max-width: 1100px) { .current-stats-grid.finance-row { grid-template-columns: repeat(2, 1fr); } }
+  @media (max-width: 900px) { .current-stats-grid { grid-template-columns: repeat(2, 1fr); } .current-stats-grid.finance-row { grid-template-columns: repeat(2, 1fr); } }
+  @media (max-width: 600px) { .current-stats-grid.finance-row { grid-template-columns: 1fr; } }
   .current-stat-card { background: #fff; padding: 1.2rem 1.5rem; border-radius: 12px; border: 1px solid #ddd; }
   .current-stat-card.finance-card { border-color: #b8860b; background: #fffdf5; }
+  .current-stat-card.income-card { border-color: #1D9E75; background: #f3faf7; }
+  .current-stat-card.expense-card { border-color: #c0392b; background: #fdf3f2; }
   .current-stat-card.radicals-card { border-color: #e74c3c; background: #fff5f5; }
   .current-stat-card.loyalists-card { border-color: #3498db; background: #f5f9ff; }
+  .current-stat-card.clickable { cursor: pointer; position: relative; transition: transform 0.1s, box-shadow 0.1s; }
+  .current-stat-card.clickable:hover { transform: translateY(-1px); box-shadow: 0 2px 8px rgba(0,0,0,0.08); }
+  .current-stat-card.clickable .chevron-hint { position: absolute; top: 10px; right: 12px; font-size: 12px; color: #aaa; transition: transform 0.2s; }
+  .current-stat-card.clickable.open .chevron-hint { transform: rotate(180deg); color: #666; }
   .current-stat-label { font-size: 12px; color: #888; text-transform: uppercase; letter-spacing: 0.5px; font-weight: 600; margin-bottom: 0.3rem; }
   .current-stat-card.finance-card .current-stat-label { color: #b8860b; }
+  .current-stat-card.income-card .current-stat-label { color: #1D9E75; }
+  .current-stat-card.expense-card .current-stat-label { color: #c0392b; }
   .current-stat-card.radicals-card .current-stat-label { color: #c0392b; }
   .current-stat-card.loyalists-card .current-stat-label { color: #2980b9; }
   .current-stat-value { font-size: 22px; font-weight: bold; color: #1a1a1a; }
   .current-stat-trend { font-size: 12px; margin-top: 2px; }
   .trend-up { color: #1D9E75; }
   .trend-down { color: #e74c3c; }
+
+  /* Finance breakdown panel */
+  .finance-breakdown { display: none; background: #fff; border-radius: 12px; border: 1px solid #ddd; padding: 1.2rem 1.5rem; margin-bottom: 2rem; }
+  .finance-breakdown.open { display: block; }
+  .finance-breakdown.income-breakdown { border-color: #1D9E75; }
+  .finance-breakdown.expense-breakdown { border-color: #c0392b; }
+  .finance-breakdown-title { font-size: 13px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 0.75rem; padding-bottom: 0.5rem; border-bottom: 1px solid #eee; }
+  .finance-breakdown.income-breakdown .finance-breakdown-title { color: #1D9E75; }
+  .finance-breakdown.expense-breakdown .finance-breakdown-title { color: #c0392b; }
+  .breakdown-category { margin-bottom: 0.85rem; }
+  .breakdown-category:last-child { margin-bottom: 0; }
+  .breakdown-category-header { display: flex; justify-content: space-between; align-items: baseline; font-size: 13px; font-weight: 600; color: #333; padding: 4px 0; }
+  .breakdown-category-name { color: #444; }
+  .breakdown-category-total { color: #666; font-variant-numeric: tabular-nums; }
+  .breakdown-items { margin-left: 1rem; margin-top: 2px; }
+  .breakdown-item { display: flex; justify-content: space-between; align-items: baseline; font-size: 12px; color: #666; padding: 2px 0; }
+  .breakdown-item-name { }
+  .breakdown-item-value { font-variant-numeric: tabular-nums; }
+  .breakdown-empty { font-size: 12px; color: #bbb; font-style: italic; margin-left: 1rem; }
 </style>
 </head>
 <body>
@@ -677,6 +814,24 @@ function renderCountryCharts() {
         <div class="current-stat-label"><i class="ti ti-receipt" style="vertical-align:-2px;margin-right:4px" aria-hidden="true"></i>Principal</div>
         <div class="current-stat-value">\${fmtFinance(c.principal)}</div>
       </div>
+      <div class="current-stat-card income-card clickable" id="incomeCard" onclick="toggleFinanceBreakdown('income')">
+        <i class="ti ti-chevron-down chevron-hint" aria-hidden="true"></i>
+        <div class="current-stat-label"><i class="ti ti-trending-up" style="vertical-align:-2px;margin-right:4px" aria-hidden="true"></i>Income</div>
+        <div class="current-stat-value">\${fmtFinance(c.buildingIncome)}</div>
+      </div>
+      <div class="current-stat-card expense-card clickable" id="expenseCard" onclick="toggleFinanceBreakdown('expense')">
+        <i class="ti ti-chevron-down chevron-hint" aria-hidden="true"></i>
+        <div class="current-stat-label"><i class="ti ti-trending-down" style="vertical-align:-2px;margin-right:4px" aria-hidden="true"></i>Expenses</div>
+        <div class="current-stat-value">\${fmtFinance(c.buildingExpense)}</div>
+      </div>
+    </div>
+    <div class="finance-breakdown income-breakdown" id="incomeBreakdown">
+      <div class="finance-breakdown-title">Income breakdown</div>
+      \${renderBreakdown(c.incomesBreakdown)}
+    </div>
+    <div class="finance-breakdown expense-breakdown" id="expenseBreakdown">
+      <div class="finance-breakdown-title">Expense breakdown</div>
+      \${renderBreakdown(c.expensesBreakdown)}
     </div>\`;
 
   Chart.defaults.font.family = 'system-ui, sans-serif';
@@ -715,7 +870,60 @@ function renderCountryCharts() {
 
 function fmt(str) {
   if (!str) return 'Unknown';
-  return str.replace(/^(STATE_|building_|pop_)/, '').replace(/_/g, ' ').toLowerCase().replace(/\b\w/g, c => c.toUpperCase());
+  // Note: inside the outer template literal, escape sequences like \s, \b, \w get
+  // resolved when JS evaluates the template (\s -> s, \b -> backspace, \w -> w).
+  // Use a literal space and character classes that don't rely on backslash escapes.
+  return str.replace(/^(STATE_|building_|pop_)/, '').replace(/_/g, ' ').toLowerCase().replace(/(^| )([a-z])/g, (_, p, c) => p + c.toUpperCase());
+}
+
+function fmtAmount(n) {
+  if (n === null || n === undefined || isNaN(n)) return '—';
+  const abs = Math.abs(n);
+  if (abs >= 1e6) return (n / 1e6).toFixed(2) + 'M';
+  if (abs >= 1e3) return (n / 1e3).toFixed(2) + 'K';
+  return n.toFixed(2);
+}
+
+// Render an expenses/incomes breakdown object: { category: { building: amount } }
+// Empty categories are still shown so the user can see which categories exist
+// but produced nothing this week.
+function renderBreakdown(breakdown) {
+  if (!breakdown || Object.keys(breakdown).length === 0) {
+    return '<div class="breakdown-empty">No data available.</div>';
+  }
+  // Sort categories by total magnitude desc, with empty ones at the bottom
+  const entries = Object.entries(breakdown).map(([cat, items]) => {
+    const total = Object.values(items).reduce((s, v) => s + v, 0);
+    return { cat, items, total };
+  });
+  entries.sort((a, b) => Math.abs(b.total) - Math.abs(a.total));
+
+  return entries.map(({ cat, items, total }) => {
+    const itemKeys = Object.keys(items);
+    const itemsHtml = itemKeys.length === 0
+      ? '<div class="breakdown-empty">No contributions this week.</div>'
+      : itemKeys
+          .sort((a, b) => Math.abs(items[b]) - Math.abs(items[a]))
+          .map(k => \`<div class="breakdown-item"><span class="breakdown-item-name">\${fmt(k)}</span><span class="breakdown-item-value">\${fmtAmount(items[k])}</span></div>\`)
+          .join('');
+    return \`<div class="breakdown-category">
+      <div class="breakdown-category-header">
+        <span class="breakdown-category-name">\${fmt(cat)}</span>
+        <span class="breakdown-category-total">\${itemKeys.length > 0 ? fmtAmount(total) : ''}</span>
+      </div>
+      <div class="breakdown-items">\${itemsHtml}</div>
+    </div>\`;
+  }).join('');
+}
+
+function toggleFinanceBreakdown(side) {
+  // side is 'income' or 'expense'. The two panels are independent — opening one
+  // doesn't close the other, so users can compare side by side if they want.
+  const card = document.getElementById(side + 'Card');
+  const panel = document.getElementById(side + 'Breakdown');
+  if (!card || !panel) return;
+  const open = panel.classList.toggle('open');
+  card.classList.toggle('open', open);
 }
 
 function switchTab(tabId, btn) {
